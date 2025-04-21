@@ -1,5 +1,10 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+import re
+
+# Función para limpiar términos y URLs (quita comillas raras, espacios, etc.)
+def clean_text(text):
+    return re.sub(r'[\"“”‘’]', '', text).strip()
 
 # Inicia una sesión de Spark
 spark = SparkSession.builder \
@@ -9,18 +14,20 @@ spark = SparkSession.builder \
 # Ruta del archivo de entrada
 input_file = "searchLog.csv"
 
-# Función para parsear cada línea
+# Función para parsear cada línea del archivo
 def parse_line(line):
     try:
         parts = line.strip().split(",")
-        term = parts[0].split("searchTerm:")[1].strip()
-        results = parts[1:]
+        term_raw = parts[0].split("searchTerm:")[1]
+        term = clean_text(term_raw)
         output = []
-        for r in results:
+        for r in parts[1:]:
             for item in r.strip().split("~"):
                 if ":" in item:
                     url, clicks = item.strip().split(":")
-                    output.append((term, url.strip(), int(clicks)))
+                    url_clean = clean_text(url)
+                    clicks_int = int(clicks)
+                    output.append((term, url_clean, clicks_int))
         return output
     except:
         return []
@@ -46,4 +53,96 @@ df.write.mode("overwrite").json("processed_data")
 
 # Finaliza sesión
 spark.stop()
+beatrizrm2002@instancehw4:~$ 
 
+
+APP.PY
+app.py
+from flask import Flask, request, jsonify, Response
+from collections import OrderedDict
+
+import json
+import os
+
+app = Flask(__name__)
+
+# Carga todos los datos desde los archivos JSON
+data = []
+
+for filename in os.listdir("processed_data"):
+    if filename.endswith(".json"):
+        with open(os.path.join("processed_data", filename)) as f:
+            for line in f:
+                data.append(json.loads(line))
+
+# /results: Devuelve los clicks por URL de un término, ordenado por clicks y tipo de dominio
+
+
+@app.route('/results', methods=['POST'])
+def get_results():
+    req_data = request.get_json()
+    term = req_data.get("term", "").strip().strip('"').strip("‘’“”")
+    filtered = [d for d in data if d["term"] == term]
+
+    def get_domain_priority(url):
+        if url.endswith(".org"):
+            return 1
+        elif url.endswith(".edu"):
+            return 2
+        elif url.endswith(".com"):
+            return 3
+        else:
+            return 4
+
+    # Ordenar: clics DESC, luego por dominio (PRIORIDAD ALTA = ORG), luego alfabético
+    sorted_results = sorted(
+        filtered,
+        key=lambda d: (
+            -d["clicks"],                      # 1. Más clics primero
+            get_domain_priority(d["url"]),     # 2. Dominio .org > .edu > .com
+            d["url"]                           # 3. Alfabético si hay empate
+        )
+    )
+    print("🟡 ORDEN DEBUG:")
+    for entry in sorted_results:
+        print(entry)
+
+    ordered = OrderedDict((entry["url"], entry["clicks"]) for entry in sorted_results)
+    return Response(
+        json.dumps({"results": ordered}),
+        content_type='application/json'
+    )
+# /trends: Total de clicks de un término
+@app.route('/trends', methods=['POST'])
+def get_trends():
+    req_data = request.get_json()
+    term = req_data.get("term", "")
+    total_clicks = sum(d["clicks"] for d in data if d["term"] == term)
+    return jsonify({"clicks": total_clicks})
+
+# /popularity: Total de clicks que recibió una URL
+@app.route('/popularity', methods=['POST'])
+def get_popularity():
+    req_data = request.get_json()
+    url = req_data.get("url", "")
+    total_clicks = sum(d["clicks"] for d in data if d["url"] == url)
+    return jsonify({"clicks": total_clicks})
+
+# /getBestTerms: Términos donde la URL recibió más del 5% de sus clicks
+@app.route('/getBestTerms', methods=['POST'])
+def get_best_terms():
+    req_data = request.get_json()
+    website = req_data.get("website", "")
+    total_clicks = sum(d["clicks"] for d in data if d["url"] == website)
+    
+    terms = {}
+    for d in data:
+        if d["url"] == website:
+            terms[d["term"]] = terms.get(d["term"], 0) + d["clicks"]
+    
+    best_terms = [term for term, clicks in terms.items() if clicks > 0.05 * total_clicks]
+    return jsonify({"best_terms": best_terms})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=80)
+beatrizrm2002@instancehw4:~$ 
