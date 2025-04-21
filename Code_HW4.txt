@@ -1,0 +1,49 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+
+# Inicia una sesión de Spark
+spark = SparkSession.builder \
+    .appName("Search Log Preprocessing") \
+    .getOrCreate()
+
+# Ruta del archivo de entrada
+input_file = "searchLog.csv"
+
+# Función para parsear cada línea
+def parse_line(line):
+    try:
+        parts = line.strip().split(",")
+        term = parts[0].split("searchTerm:")[1].strip()
+        results = parts[1:]
+        output = []
+        for r in results:
+            for item in r.strip().split("~"):
+                if ":" in item:
+                    url, clicks = item.strip().split(":")
+                    output.append((term, url.strip(), int(clicks)))
+        return output
+    except:
+        return []
+
+# Lee el archivo como RDD
+rdd = spark.sparkContext.textFile(input_file)
+
+# Aplica la función de parsing
+records = rdd.flatMap(parse_line)
+
+# Define el esquema
+schema = StructType([
+    StructField("term", StringType(), True),
+    StructField("url", StringType(), True),
+    StructField("clicks", IntegerType(), True)
+])
+
+# Convierte en DataFrame
+df = spark.createDataFrame(records, schema)
+
+# Guarda el DataFrame en formato JSON
+df.write.mode("overwrite").json("processed_data")
+
+# Finaliza sesión
+spark.stop()
+
